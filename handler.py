@@ -255,7 +255,8 @@ def save_base64_to_file(base64_data, temp_dir, output_filename):
 def handler(job):
     job_input = job.get("input", {})
 
-    logger.info(f"Received job input: {job_input}")
+    # Do not log base64 image payloads or potentially private image URLs/paths.
+    logger.info("Received job input fields: %s", sorted(job_input.keys()))
     task_id = f"task_{uuid.uuid4()}"
 
     # ------------------------------
@@ -294,14 +295,28 @@ def handler(job):
 
     prompt = load_workflow(workflow_path)
 
-    # 노드 번호는 각 워크플로우 JSON과 동일하게 사용
-    image_bytes = base64.b64decode(job_input["image_base64"], validate=True)
-uploaded_image_name = upload_image_to_comfy(image_bytes, task_id)
-prompt[_NODE_IMAGE_1]["inputs"]["image"] = uploaded_image_name
+    # Upload every reference through ComfyUI's managed input endpoint.
+    # The absolute /task_... paths returned by process_input are not valid
+    # LoadImage values; LoadImage expects the uploaded input filename.
+    uploaded_image_names = []
+    for image_index, image_path in enumerate(image_paths, start=1):
+        try:
+            with open(image_path, "rb") as image_file:
+                image_bytes = image_file.read()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not read reference image {image_index} for ComfyUI upload."
+            ) from exc
+
+        uploaded_image_names.append(
+            upload_image_to_comfy(image_bytes, f"{task_id}_{image_index}")
+        )
+
+    prompt[_NODE_IMAGE_1]["inputs"]["image"] = uploaded_image_names[0]
     if num_images >= 2:
-        prompt[_NODE_IMAGE_2]["inputs"]["image"] = image_paths[1]
+        prompt[_NODE_IMAGE_2]["inputs"]["image"] = uploaded_image_names[1]
     if num_images >= 3:
-        prompt[_NODE_IMAGE_3]["inputs"]["image"] = image_paths[2]
+        prompt[_NODE_IMAGE_3]["inputs"]["image"] = uploaded_image_names[2]
 
     prompt[_NODE_PROMPT]["inputs"]["prompt"] = job_input.get("prompt", "")
     if _NODE_SEED in prompt and "seed" in job_input:
