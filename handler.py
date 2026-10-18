@@ -11,12 +11,57 @@ import urllib.parse
 import binascii # Base64 에러 처리를 위해 import
 import subprocess
 import time
-
+import io
+import requests
+from PIL import Image, ImageOps
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+def verify_and_normalize_image(image_bytes: bytes) -> bytes:
+    """Verify uploaded image and normalize it to a clean JPEG."""
+    if not image_bytes:
+        raise ValueError("Reference image is empty.")
 
+    with Image.open(io.BytesIO(image_bytes)) as check:
+        check.verify()
+
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+
+        if image.width < 64 or image.height < 64:
+            raise ValueError("Reference image must be at least 64x64 pixels.")
+
+        if image.width * image.height > 40_000_000:
+            raise ValueError("Reference image exceeds the 40-megapixel limit.")
+
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=95, optimize=True)
+        return output.getvalue()
+
+
+def upload_image_to_comfy(image_bytes: bytes, task_id: str) -> str:
+    """Upload a verified image to ComfyUI's managed input folder."""
+    jpeg_bytes = verify_and_normalize_image(image_bytes)
+
+    url = f"http://{server_address}:8188/upload/image"
+    filename = f"qwen_reference_{task_id}.jpg"
+
+    response = requests.post(
+        url,
+        files={"image": (filename, jpeg_bytes, "image/jpeg")},
+        data={"type": "input", "overwrite": "true"},
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    result = response.json()
+    uploaded_name = result.get("name")
+
+    if not uploaded_name or result.get("type") != "input":
+        raise RuntimeError(f"ComfyUI returned an invalid image-upload response: {result}")
+
+    return uploaded_name
 # CUDA 검사 및 설정
 def check_cuda_availability():
     """CUDA 사용 가능 여부를 확인하고 환경 변수를 설정합니다."""
@@ -250,7 +295,9 @@ def handler(job):
     prompt = load_workflow(workflow_path)
 
     # 노드 번호는 각 워크플로우 JSON과 동일하게 사용
-    prompt[_NODE_IMAGE_1]["inputs"]["image"] = image_paths[0]
+    image_bytes = base64.b64decode(job_input["image_base64"], validate=True)
+uploaded_image_name = upload_image_to_comfy(image_bytes, task_id)
+prompt[_NODE_IMAGE_1]["inputs"]["image"] = uploaded_image_name
     if num_images >= 2:
         prompt[_NODE_IMAGE_2]["inputs"]["image"] = image_paths[1]
     if num_images >= 3:
