@@ -10,6 +10,96 @@ log_elapsed() {
     echo "QWEN_TIMING stage=${label} elapsed_seconds=$((now - BOOT_START_EPOCH))"
 }
 
+configure_qwen_model_volume() {
+    local volume_dir="${QWEN_MODEL_VOLUME_DIR:-}"
+    if [ -z "$volume_dir" ]; then
+        if [ "${QWEN_MODEL_STORAGE:-container}" = "volume" ]; then
+            echo "QWEN_MODEL_STORAGE=volume requires QWEN_MODEL_VOLUME_DIR" >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    local mount_root="${QWEN_NETWORK_VOLUME_MOUNT:-/runpod-volume}"
+    mount_root="$(realpath -e "$mount_root")" || {
+        echo "Network Volume mount path does not exist" >&2
+        return 1
+    }
+    volume_dir="$(realpath -m "$volume_dir")"
+    case "$volume_dir" in
+        "$mount_root"/*) ;;
+        *) echo "QWEN_MODEL_VOLUME_DIR must be inside $mount_root" >&2; return 1 ;;
+    esac
+    if ! mountpoint -q "$mount_root"; then
+        echo "RunPod Network Volume is not mounted at $mount_root" >&2
+        return 1
+    fi
+
+    local names=(
+        "qwen_image_edit_2511_fp8mixed.safetensors"
+        "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        "qwen_image_vae.safetensors"
+    )
+    local paths=(
+        "/ComfyUI/models/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors"
+        "/ComfyUI/models/loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        "/ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        "/ComfyUI/models/vae/qwen_image_vae.safetensors"
+    )
+
+    local i target
+    for i in "${!names[@]}"; do
+        target="$volume_dir/${names[$i]}"
+        if [ ! -s "$target" ]; then
+            echo "Required Qwen model is missing or empty on the volume: $target" >&2
+            echo "Seed the volume from the model-baked runtime before enabling volume mode." >&2
+            return 1
+        fi
+        mkdir -p "$(dirname "${paths[$i]}")"
+        ln -sfn "$target" "${paths[$i]}"
+    done
+    echo "Qwen models linked from Network Volume: $volume_dir"
+}
+
+log_qwen_model_sizes() {
+    local names=(
+        "qwen_image_edit_2511_fp8mixed.safetensors"
+        "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        "qwen_image_vae.safetensors"
+    )
+    local paths=(
+        "/ComfyUI/models/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors"
+        "/ComfyUI/models/loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        "/ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        "/ComfyUI/models/vae/qwen_image_vae.safetensors"
+    )
+    local total=0 i bytes
+    for i in "${!names[@]}"; do
+        if [ ! -s "${paths[$i]}" ]; then
+            echo "Required Qwen model is missing or empty: ${paths[$i]}" >&2
+            return 1
+        fi
+        bytes=$(stat -c '%s' "${paths[$i]}")
+        total=$((total + bytes))
+        echo "QWEN_MODEL_ASSET name=${names[$i]} bytes=$bytes"
+    done
+    echo "QWEN_MODEL_ASSET_TOTAL bytes=$total"
+}
+
+if [ "${QWEN_SEED_MODEL_VOLUME:-false}" = "true" ]; then
+    mount_root="${QWEN_NETWORK_VOLUME_MOUNT:-/runpod-volume}"
+    mount_root="$(realpath -e "$mount_root")" || {
+        echo "Network Volume mount path does not exist" >&2
+        exit 1
+    }
+    export QWEN_MODEL_VOLUME_DIR="${QWEN_MODEL_VOLUME_DIR:-$mount_root/qwen-models}"
+    /seed_qwen_models_to_volume.sh
+fi
+configure_qwen_model_volume
+log_qwen_model_sizes
+
 # CUDA 검사 및 설정
 echo "Checking CUDA availability..."
 

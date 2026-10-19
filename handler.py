@@ -14,6 +14,7 @@ import time
 import io
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+from comfy_timing import wait_for_execution
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -277,19 +278,24 @@ def get_history(prompt_id):
         return json.loads(response.read())
 
 def get_images(ws, prompt):
+    queue_started = time.monotonic()
     prompt_id = queue_prompt(prompt)['prompt_id']
-    output_images = {}
-    while True:
-        out = ws.recv()
-        if isinstance(out, str):
-            message = json.loads(out)
-            if message['type'] == 'executing':
-                data = message['data']
-                if data['node'] is None and data['prompt_id'] == prompt_id:
-                    break
-        else:
-            continue
+    enqueued_at = time.monotonic()
+    logger.info("QWEN_TIMING phase=prompt_submission seconds=%.3f worker_prompt=%s",
+                enqueued_at - queue_started, prompt_id)
+    try:
+        timing = wait_for_execution(ws, prompt_id, enqueued_at)
+    except Exception as exc:
+        logger.error("QWEN_TIMING phase=execution_failed worker_prompt=%s error_type=%s",
+                     prompt_id, type(exc).__name__)
+        raise
+    logger.info("QWEN_TIMING phase=queue_wait seconds=%.3f worker_prompt=%s",
+                timing["queue_wait_seconds"], prompt_id)
+    logger.info("QWEN_TIMING phase=execution_model_load_plus_inference seconds=%.3f worker_prompt=%s",
+                timing["execution_seconds"], prompt_id)
 
+    retrieval_started = time.monotonic()
+    output_images = {}
     history = get_history(prompt_id)[prompt_id]
     for node_id in history['outputs']:
         node_output = history['outputs'][node_id]
@@ -304,6 +310,8 @@ def get_images(ws, prompt):
                 images_output.append(image_data)
         output_images[node_id] = images_output
 
+    logger.info("QWEN_TIMING phase=output_retrieval seconds=%.3f worker_prompt=%s",
+                time.monotonic() - retrieval_started, prompt_id)
     return output_images
 
 def load_workflow(workflow_path):
@@ -505,11 +513,13 @@ def handler(job):
             if attempt == max_attempts - 1:
                 raise Exception("웹소켓 연결 시간 초과 (3분)")
             time.sleep(5)
-    inference_started = time.monotonic()
-    images = get_images(ws, prompt)
-    logger.info("QWEN_TIMING phase=comfy_inference_and_possible_model_load seconds=%.3f worker_job=%d",
-                time.monotonic() - inference_started, job_number)
-    ws.close()
+    try:
+        images = get_images(ws, prompt)
+    finally:
+        try:
+            ws.close()
+        except Exception as exc:
+            logger.warning("ComfyUI WebSocket close failed (%s)", type(exc).__name__)
 
     # 이미지가 없는 경우 처리
     if not images:

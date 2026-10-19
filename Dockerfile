@@ -2,7 +2,8 @@
 FROM wlsdml1114/multitalk-base:1.7 as runtime
 
 # wget 설치 (URL 다운로드를 위해)
-RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends wget util-linux \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN pip install -U "huggingface_hub[hf_transfer]"
 COPY requirements.txt /tmp/qwen-worker-requirements.txt
@@ -32,6 +33,6 @@ RUN wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/spl
 RUN wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors -O /ComfyUI/models/vae/qwen_image_vae.safetensors
 
 COPY . .
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /seed_qwen_models_to_volume.sh
 
 CMD ["/entrypoint.sh"]

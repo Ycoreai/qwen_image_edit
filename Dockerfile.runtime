@@ -1,9 +1,10 @@
 # Build this infrequently, only when Qwen/ComfyUI/model dependencies change.
 # Publish the resulting image to a registry and pin its immutable digest in
 # Dockerfile.app's QWEN_RUNTIME_IMAGE build argument.
-FROM wlsdml1114/multitalk-base:1.7
+ARG QWEN_RUNTIME_BASE_IMAGE
+FROM ${QWEN_RUNTIME_BASE_IMAGE}
 
-RUN apt-get update && apt-get install -y --no-install-recommends wget git curl \
+RUN apt-get update && apt-get install -y --no-install-recommends wget git curl util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install -U "huggingface_hub[hf_transfer]"
@@ -20,18 +21,25 @@ RUN git clone https://github.com/ltdrdata/ComfyUI-Manager.git /ComfyUI/custom_no
 RUN git clone https://github.com/kijai/ComfyUI-KJNodes.git /ComfyUI/custom_nodes/ComfyUI-KJNodes \
     && pip install --no-cache-dir -r /ComfyUI/custom_nodes/ComfyUI-KJNodes/requirements.txt
 
+ARG QWEN_MODEL_STORAGE=container
 RUN mkdir -p /ComfyUI/models/diffusion_models /ComfyUI/models/loras \
     /ComfyUI/models/text_encoders /ComfyUI/models/vae \
-    && wget -q https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors \
-       -O /ComfyUI/models/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors \
-    && wget -q https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
-       -O /ComfyUI/models/loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
-    && wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
-       -O /ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
-    && wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors \
-       -O /ComfyUI/models/vae/qwen_image_vae.safetensors
+    && if [ "$QWEN_MODEL_STORAGE" = "container" ]; then \
+      wget -q https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors \
+        -O /ComfyUI/models/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors \
+      && wget -q https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
+        -O /ComfyUI/models/loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
+      && wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
+        -O /ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
+      && wget -q https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors \
+        -O /ComfyUI/models/vae/qwen_image_vae.safetensors; \
+    elif [ "$QWEN_MODEL_STORAGE" != "volume" ]; then \
+      echo "QWEN_MODEL_STORAGE must be container or volume" >&2; exit 2; \
+    fi
 
 # Keep runtime image independent of handler/workflow/Pillow-overlay source edits.
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY seed_qwen_models_to_volume.sh /seed_qwen_models_to_volume.sh
+RUN chmod +x /entrypoint.sh /seed_qwen_models_to_volume.sh
+ENV QWEN_MODEL_STORAGE=${QWEN_MODEL_STORAGE}
 CMD ["/entrypoint.sh"]
