@@ -223,6 +223,7 @@ except Exception as e:
 
 server_address = os.getenv('SERVER_ADDRESS', '127.0.0.1')
 client_id = str(uuid.uuid4())
+_HANDLER_JOB_COUNT = 0
 def save_data_if_base64(data_input, temp_dir, output_filename):
     """
     입력 데이터가 Base64 문자열인지 확인하고, 맞다면 파일로 저장 후 경로를 반환합니다.
@@ -385,6 +386,10 @@ def save_base64_to_file(base64_data, temp_dir, output_filename):
         raise Exception(f"Base64 디코딩 실패: {e}")
 
 def handler(job):
+    global _HANDLER_JOB_COUNT
+    _HANDLER_JOB_COUNT += 1
+    job_number = _HANDLER_JOB_COUNT
+    request_started = time.monotonic()
     job_input = job.get("input", {})
 
     # Do not log base64 image payloads or potentially private image URLs/paths.
@@ -414,6 +419,8 @@ def handler(job):
             break
 
     num_images = len(image_paths)
+    logger.info("QWEN_TIMING phase=input_preparation seconds=%.3f images=%d worker_job=%d",
+                time.monotonic() - request_started, num_images, job_number)
     if num_images == 0:
         return {"error": "최소 1개의 이미지 입력이 필요합니다. (image_path / image_url / image_base64 중 하나)"}
 
@@ -498,7 +505,10 @@ def handler(job):
             if attempt == max_attempts - 1:
                 raise Exception("웹소켓 연결 시간 초과 (3분)")
             time.sleep(5)
+    inference_started = time.monotonic()
     images = get_images(ws, prompt)
+    logger.info("QWEN_TIMING phase=comfy_inference_and_possible_model_load seconds=%.3f worker_job=%d",
+                time.monotonic() - inference_started, job_number)
     ws.close()
 
     # 이미지가 없는 경우 처리
@@ -512,6 +522,8 @@ def handler(job):
             overlay = job_input.get("text_overlay")
             if overlay:
                 output_bytes = apply_text_overlay(output_bytes, overlay)
+            logger.info("QWEN_TIMING phase=job_total seconds=%.3f worker_job=%d",
+                        time.monotonic() - request_started, job_number)
             return {"image": base64.b64encode(output_bytes).decode("ascii")}
     
     return {"error": "이미지를 찾을 수 없습니다."}
